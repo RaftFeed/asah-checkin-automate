@@ -315,6 +315,32 @@ class TestFindCheckinButton(unittest.TestCase):
         btn = checkin.find_checkin_button(self.page)
         self.assertIsNone(btn)
 
+    def test_find_checkin_button_new_layout(self):
+        html = """
+        <div class="card">
+            <h3>Daily Check-in</h3>
+            <a href="#">Lihat riwayat</a>
+            <p>Check-in rutin menciptakan ritme belajar yang teratur.</p>
+            <button class="btn">Tulis Check-in</button>
+        </div>
+        """
+        self.page.set_content(html)
+        btn = checkin.find_checkin_button(self.page)
+        self.assertIsNotNone(btn)
+        self.assertIn("Tulis Check-in", btn.text_content())
+
+    def test_find_checkin_button_returns_none_when_disabled(self):
+        html = """
+        <div class="card">
+            <h3>Daily Check-in</h3>
+            <p>Check-in hari ini sudah dilakukan! Sampai jumpa besok.</p>
+            <button class="btn" disabled>Tulis Check-in</button>
+        </div>
+        """
+        self.page.set_content(html)
+        btn = checkin.find_checkin_button(self.page)
+        self.assertIsNone(btn)
+
     def test_looks_already_checked_in_with_builtin_markers(self):
         html = """
         <div class="card">
@@ -326,6 +352,30 @@ class TestFindCheckinButton(unittest.TestCase):
         """
         self.page.set_content(html)
         self.assertTrue(checkin.looks_already_checked_in(self.page))
+
+    def test_looks_already_checked_in_new_layout_completed(self):
+        html = """
+        <div class="card">
+            <h3>Daily Check-in</h3>
+            <a href="#">Lihat riwayat</a>
+            <p>Check-in hari ini sudah dilakukan! Sampai jumpa besok.</p>
+            <button disabled>Tulis Check-in</button>
+        </div>
+        """
+        self.page.set_content(html)
+        self.assertTrue(checkin.looks_already_checked_in(self.page))
+
+    def test_looks_already_checked_in_new_layout_pending(self):
+        html = """
+        <div class="card">
+            <h3>Daily Check-in</h3>
+            <a href="#">Lihat riwayat</a>
+            <p>Check-in rutin menciptakan ritme belajar yang teratur sehingga membuat Anda lebih konsisten dan terarah.</p>
+            <button>Tulis Check-in</button>
+        </div>
+        """
+        self.page.set_content(html)
+        self.assertFalse(checkin.looks_already_checked_in(self.page))
 
     def test_looks_already_checked_in_false_when_pending(self):
         html = """

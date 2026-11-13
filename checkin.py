@@ -91,7 +91,7 @@ CHROME_PROFILE = str(HERE / ".chrome-profile")
 BUILTIN_DONE_MARKERS = [
     "already checked in", "sudah check-in", "sudah absen", "sudah melakukan check-in",
     "checked in today", "see you tomorrow", "sampai jumpa besok",
-    "lihat check-in", "lihat riwayat",
+    "sudah dilakukan", "lihat check-in",
 ]
 SUBMIT_CANDIDATES = [
     '#checkinForm button[type="submit"]', '#checkinSubmit',
@@ -246,7 +246,10 @@ def looks_already_checked_in(page):
             const cards = [...document.querySelectorAll('div, section, aside, li')];
             return cards.some(c => {
                 const t = (c.innerText || '').toLowerCase();
-                return t.includes('daily check-in') && (t.includes('terisi') || t.includes('lihat check-in') || t.includes('lihat riwayat'));
+                if (!t.includes('daily check-in')) return false;
+                if (t.includes('terisi') || t.includes('lihat check-in') || t.includes('sudah dilakukan') || t.includes('sampai jumpa besok')) return true;
+                const btn = c.querySelector('button, a, [role="button"]');
+                return btn && (btn.disabled || btn.getAttribute('aria-disabled') === 'true');
             });
         }""")
         return bool(card_done)
@@ -301,6 +304,12 @@ def find_checkin_button(page, config=None):
     CHECKIN_LABELS = ["Tulis Check-in", "Mulai isi check-in"]
     CHECKIN_RE = re.compile(r"tulis\s+check-?in|mulai.*check-?in|isi.*check-?in", re.I)
 
+    def is_usable(loc):
+        try:
+            return loc.is_visible() and not loc.is_disabled()
+        except Exception:
+            return False
+
     # 1. Scoped match: inside card/section with "Daily Check-in" heading
     for label in CHECKIN_LABELS:
         try:
@@ -311,7 +320,7 @@ def find_checkin_button(page, config=None):
             )
             for i in range(cards.count()):
                 btn = cards.nth(i).locator(f':is(button, a, [role="button"]):has-text("{label}")').first
-                if btn.is_visible():
+                if is_usable(btn):
                     log(f"Check-in button found via card-scoped '{label}'")
                     return btn
         except Exception:
@@ -321,7 +330,7 @@ def find_checkin_button(page, config=None):
     for label in CHECKIN_LABELS:
         try:
             btn = page.locator(f':is(button, a, [role="button"]):has-text("{label}")').first
-            if btn.is_visible():
+            if is_usable(btn):
                 log(f"Check-in button found via global '{label}'")
                 return btn
         except Exception:
@@ -336,7 +345,7 @@ def find_checkin_button(page, config=None):
             btn = cards.nth(i).locator(':is(button, a, [role="button"])').filter(
                 has_text=CHECKIN_RE
             ).first
-            if btn.is_visible():
+            if is_usable(btn):
                 log("Check-in button found via fuzzy card match")
                 return btn
     except Exception:
@@ -345,7 +354,7 @@ def find_checkin_button(page, config=None):
     # 4. Fallback to custom strategies from config/selector.json if provided
     if config and config.get("strategies"):
         btn = find_button(page, config["strategies"])
-        if btn:
+        if btn and is_usable(btn):
             return btn
 
     return None
@@ -649,6 +658,91 @@ def submit_form(page):
     return False
 
 
+def fill_and_submit_dialog(page, answers):
+    try:
+        dialog = page.locator('div[role="dialog"], [data-slot="dialog"]').first
+        if not dialog.is_visible():
+            return None
+        log("Modern check-in dialog detected — filling fields...", "form")
+
+        # 1. Mood
+        mood_val = answers.get("mood", "Baik")
+        try:
+            mood_btn = dialog.locator(f'label:has-text("{mood_val}")').first
+            if not mood_btn.is_visible():
+                mood_btn = dialog.locator(f'input[type="radio"][value="{mood_val}"]').first
+            if mood_btn.is_visible():
+                mood_btn.click()
+                log(f"Selected mood: {mood_val}", "form")
+            else:
+                dialog.locator('label:has-text("Baik")').first.click()
+                log("Fallback selected mood: Baik", "form")
+        except Exception as e:
+            log(f"Failed to select mood: {e}", "form")
+
+        page.wait_for_timeout(400)
+
+        # 2. Course combobox
+        course_name = (
+            answers.get("Pilih kelas yang dipelajari")
+            or answers.get("Pilih kelas yang Anda pelajari")
+            or answers.get("course")
+            or ""
+        )
+        if course_name:
+            try:
+                combobox = dialog.locator('input[role="combobox"]').first
+                if combobox.is_visible():
+                    combobox.click()
+                    page.wait_for_timeout(400)
+                    opt = page.locator(f'[role="option"]:has-text("{course_name}")').first
+                    if opt.is_visible():
+                        opt.click()
+                        log(f"Selected course: {course_name}", "form")
+                    else:
+                        combobox.fill(course_name)
+                        page.wait_for_timeout(400)
+                        opt = page.locator(f'[role="option"]:has-text("{course_name}")').first
+                        if opt.is_visible():
+                            opt.click()
+                            log(f"Selected course after search: {course_name}", "form")
+                        else:
+                            first_opt = page.locator('[role="option"]').first
+                            if first_opt.is_visible():
+                                first_opt.click()
+                                log("Selected first available course option", "form")
+            except Exception as e:
+                log(f"Failed to select course: {e}", "form")
+
+        page.wait_for_timeout(400)
+
+        # 3. Reflection
+        reflection = answers.get("reflection") or ""
+        if reflection:
+            try:
+                textarea = dialog.locator('textarea[name="reflection"], textarea').first
+                if textarea.is_visible():
+                    textarea.fill(reflection)
+                    log(f"Filled reflection ({len(reflection)} chars)", "form")
+            except Exception as e:
+                log(f"Failed to fill reflection: {e}", "form")
+
+        page.wait_for_timeout(400)
+
+        # 4. Kirim button
+        kirim_btn = dialog.locator('button:has-text("Kirim")').first
+        if kirim_btn.is_visible() and kirim_btn.is_enabled():
+            kirim_btn.click()
+            log("Clicked Kirim button in dialog", "form")
+            return True
+        else:
+            log(f"Kirim button not ready (visible={kirim_btn.is_visible()}, enabled={kirim_btn.is_enabled()})", "form")
+            return False
+    except Exception as e:
+        log(f"Error filling modern dialog: {e}", "form")
+        return False
+
+
 def run_checkin(force=False, streak_only=False, no_streak=False):
     # ponytail: plan which tasks need to run today based on local guards and CLI flags
     need_checkin, need_streak = plan_run_tasks(force=force, streak_only=streak_only, no_streak=no_streak)
@@ -734,35 +828,53 @@ def run_checkin(force=False, streak_only=False, no_streak=False):
                         except Exception:
                             pass
                         page.wait_for_timeout(1500)
-                        fields = enumerate_form(page)
-                        if fields:
-                            if not ANSWERS_PATH.exists():
-                                detail = f"Form detected with {len(fields)} fields but form-answers.json missing."
-                                log(detail)
-                                save_screenshot(page, "missing_answers_file")
-                                outcome, code = "missing-answers", 1
-                                notify_failure(detail)
-                                return code
-                            parsed = json.loads(ANSWERS_PATH.read_text(encoding="utf-8"))
-                            raw = parsed.get("answers", parsed) if isinstance(parsed, dict) else {}
-                            today = {k: pick_daily(v) for k, v in raw.items() if not k.startswith("_")}
-                            log(f"Form detected with {len(fields)} fields — filling from form-answers.json")
-                            missing = [f for f in fields if f["kind"] != "checkbox" and today.get(f["label"]) is None and today.get(f["name"]) is None]
-                            if missing:
-                                detail = "Missing answers: " + " | ".join(f.get("label") or f.get("name") for f in missing)
-                                log(detail)
-                                log("Not submitting partial form. Update form-answers.json, then run again.")
-                                save_screenshot(page, "missing_answers")
-                                outcome, code = "missing-answers", 1
-                                notify_failure(detail)
-                                return code
-                            if fill_form(page, fields, today) != len(fields) or not submit_form(page):
-                                detail = "Failed to fill all fields or submit form."
+                        if not ANSWERS_PATH.exists():
+                            detail = f"form-answers.json missing."
+                            log(detail)
+                            save_screenshot(page, "missing_answers_file")
+                            outcome, code = "missing-answers", 1
+                            notify_failure(detail)
+                            return code
+                        parsed = json.loads(ANSWERS_PATH.read_text(encoding="utf-8"))
+                        raw = parsed.get("answers", parsed) if isinstance(parsed, dict) else {}
+                        today = {k: pick_daily(v) for k, v in raw.items() if not k.startswith("_")}
+
+                        # Check for modern dialog first
+                        dialog = page.locator('div[role="dialog"], [data-slot="dialog"]').first
+                        dialog_present = False
+                        try:
+                            dialog_present = dialog.is_visible()
+                        except Exception:
+                            dialog_present = False
+
+                        if dialog_present:
+                            if not fill_and_submit_dialog(page, today):
+                                detail = "Failed to fill or submit modern check-in dialog."
                                 log(detail)
                                 save_screenshot(page, "submit_failed")
                                 outcome, code = "submit-failed", 1
                                 notify_failure(detail)
                                 return code
+                        else:
+                            fields = enumerate_form(page)
+                            if fields:
+                                log(f"Form detected with {len(fields)} fields — filling from form-answers.json")
+                                missing = [f for f in fields if f["kind"] != "checkbox" and today.get(f["label"]) is None and today.get(f["name"]) is None]
+                                if missing:
+                                    detail = "Missing answers: " + " | ".join(f.get("label") or f.get("name") for f in missing)
+                                    log(detail)
+                                    log("Not submitting partial form. Update form-answers.json, then run again.")
+                                    save_screenshot(page, "missing_answers")
+                                    outcome, code = "missing-answers", 1
+                                    notify_failure(detail)
+                                    return code
+                                if fill_form(page, fields, today) != len(fields) or not submit_form(page):
+                                    detail = "Failed to fill all fields or submit form."
+                                    log(detail)
+                                    save_screenshot(page, "submit_failed")
+                                    outcome, code = "submit-failed", 1
+                                    notify_failure(detail)
+                                    return code
                             try:
                                 page.wait_for_load_state("networkidle", timeout=10000)
                             except Exception:

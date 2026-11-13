@@ -91,13 +91,14 @@ CHROME_PROFILE = str(HERE / ".chrome-profile")
 BUILTIN_DONE_MARKERS = [
     "already checked in", "sudah check-in", "sudah absen", "sudah melakukan check-in",
     "checked in today", "see you tomorrow", "sampai jumpa besok",
-    "lihat check-in",
+    "lihat check-in", "lihat riwayat",
 ]
 SUBMIT_CANDIDATES = [
     '#checkinForm button[type="submit"]', '#checkinSubmit',
     'form button[type="submit"]', 'form input[type="submit"]',
     'button:has-text("Kirim")', 'button:has-text("Submit")', 'button:has-text("Simpan")',
     'button:has-text("Check-in")', 'button:has-text("Check in")',
+    'button:has-text("Tulis Check-in")',
 ]
 
 
@@ -245,7 +246,7 @@ def looks_already_checked_in(page):
             const cards = [...document.querySelectorAll('div, section, aside, li')];
             return cards.some(c => {
                 const t = (c.innerText || '').toLowerCase();
-                return t.includes('daily check-in') && (t.includes('terisi') || t.includes('lihat check-in'));
+                return t.includes('daily check-in') && (t.includes('terisi') || t.includes('lihat check-in') || t.includes('lihat riwayat'));
             });
         }""")
         return bool(card_done)
@@ -296,29 +297,35 @@ def find_button(page, strategies):
 
 
 def find_checkin_button(page, config=None):
-    # 1. Scoped match: inside card/section with "Daily Check-in" heading
-    try:
-        cards = page.locator("div, section, aside, li, article").filter(
-            has_text=re.compile(r"daily\s+check-?in", re.I)
-        ).filter(
-            has=page.locator(':is(button, a, [role="button"]):has-text("Mulai isi check-in")')
-        )
-        for i in range(cards.count()):
-            btn = cards.nth(i).locator(':is(button, a, [role="button"]):has-text("Mulai isi check-in")').first
-            if btn.is_visible():
-                log("Check-in button found via card-scoped 'Mulai isi check-in'")
-                return btn
-    except Exception:
-        pass
+    # ponytail: try both old ("Mulai isi check-in") and new ("Tulis Check-in") button labels
+    CHECKIN_LABELS = ["Tulis Check-in", "Mulai isi check-in"]
+    CHECKIN_RE = re.compile(r"tulis\s+check-?in|mulai.*check-?in|isi.*check-?in", re.I)
 
-    # 2. Global match: any button/link with "Mulai isi check-in"
-    try:
-        btn = page.locator(':is(button, a, [role="button"]):has-text("Mulai isi check-in")').first
-        if btn.is_visible():
-            log("Check-in button found via global 'Mulai isi check-in'")
-            return btn
-    except Exception:
-        pass
+    # 1. Scoped match: inside card/section with "Daily Check-in" heading
+    for label in CHECKIN_LABELS:
+        try:
+            cards = page.locator("div, section, aside, li, article").filter(
+                has_text=re.compile(r"daily\s+check-?in", re.I)
+            ).filter(
+                has=page.locator(f':is(button, a, [role="button"]):has-text("{label}")')
+            )
+            for i in range(cards.count()):
+                btn = cards.nth(i).locator(f':is(button, a, [role="button"]):has-text("{label}")').first
+                if btn.is_visible():
+                    log(f"Check-in button found via card-scoped '{label}'")
+                    return btn
+        except Exception:
+            pass
+
+    # 2. Global match: any button/link with check-in label
+    for label in CHECKIN_LABELS:
+        try:
+            btn = page.locator(f':is(button, a, [role="button"]):has-text("{label}")').first
+            if btn.is_visible():
+                log(f"Check-in button found via global '{label}'")
+                return btn
+        except Exception:
+            pass
 
     # 3. Fuzzy match inside Daily Check-in card
     try:
@@ -327,7 +334,7 @@ def find_checkin_button(page, config=None):
         )
         for i in range(cards.count()):
             btn = cards.nth(i).locator(':is(button, a, [role="button"])').filter(
-                has_text=re.compile(r"mulai.*check-?in|isi.*check-?in", re.I)
+                has_text=CHECKIN_RE
             ).first
             if btn.is_visible():
                 log("Check-in button found via fuzzy card match")
@@ -367,26 +374,43 @@ def dismiss_classroom_modals(page):
 
 
 def find_continue_button(page):
-    # ponytail: card under Aktivitas Belajar labeled 'Sedang dipelajari' with 'Lanjutkan' link/button
-    try:
-        cards = page.locator("div, li, tr, section").filter(
-            has_text=re.compile(r"sedang dipelajari", re.I)
-        ).filter(
-            has=page.locator(':is(a, button, [role="button"]):has-text("Lanjutkan")')
-        )
-        for i in range(cards.count()):
-            btn = cards.nth(i).locator(':is(a, button, [role="button"]):has-text("Lanjutkan")').first
+    # ponytail: try new layout first ("Progres Belajar" with "Lanjut Belajar"),
+    # then old layout ("Aktivitas Belajar" with "Sedang dipelajari" + "Lanjutkan")
+    CONTINUE_LABELS = [
+        ("lanjut belajar", r"progres\s+belajar"),
+        ("lanjutkan", r"sedang dipelajari"),
+    ]
+    for btn_text, section_re in CONTINUE_LABELS:
+        try:
+            cards = page.locator("div, li, tr, section, article").filter(
+                has_text=re.compile(section_re, re.I)
+            ).filter(
+                has=page.locator(f':is(a, button, [role="button"]):has-text("{btn_text}")')
+            )
+            for i in range(cards.count()):
+                btn = cards.nth(i).locator(f':is(a, button, [role="button"]):has-text("{btn_text}")').first
+                if btn.is_visible():
+                    log(f"Continue button found: '{btn_text}' in section matching '{section_re}'", "streak")
+                    return btn
+        except Exception:
+            pass
+
+    # Fallback: any visible "Lanjut Belajar" or "Lanjutkan" anywhere
+    for btn_text in ["Lanjut Belajar", "Lanjutkan"]:
+        try:
+            btn = page.locator(f':is(a, button, [role="button"]):has-text("{btn_text}")').first
             if btn.is_visible():
+                log(f"Continue button found via global fallback: '{btn_text}'", "streak")
                 return btn
-    except Exception:
-        pass
+        except Exception:
+            pass
 
     return None
 
 
 def trigger_streak_belajar(context, page):
     log("Starting streak belajar check-in...", "streak")
-    if not re.search(r"/(dashboard|academies)", page.url or ""):
+    if not re.search(r"/(dashboard|academies|beranda)", page.url or ""):
         page.goto("https://www.dicoding.com/dashboard", wait_until="domcontentloaded", timeout=30000)
         try:
             page.wait_for_load_state("networkidle", timeout=10000)
@@ -396,11 +420,11 @@ def trigger_streak_belajar(context, page):
 
     btn = find_continue_button(page)
     if not btn:
-        log("tidak ada kelas aktif (No active course with 'Lanjutkan' found under Sedang dipelajari).", "streak")
+        log("tidak ada kelas aktif (No active course with 'Lanjut Belajar'/'Lanjutkan' found).", "streak")
         save_screenshot(page, "streak_no_active_class")
         return "no-active"
 
-    log("Found 'Lanjutkan' button for active course. Clicking...", "streak")
+    log("Found continue button for active course. Clicking...", "streak")
     active_page = page
     num_pages = len(context.pages)
     target_attr = (btn.get_attribute("target") or "").strip().lower()
